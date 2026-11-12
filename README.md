@@ -1,4 +1,4 @@
-# MiniOS — a small x86 teaching operating system
+# MiniOS — a small x86 operating system
 
 A 32-bit x86 operating system (~4,200 lines of C and assembly) that boots in QEMU and shows
 the core ideas of an OS working for real: interrupts, preemptive multitasking with three
@@ -240,7 +240,7 @@ wait queue (state `BLOCKED`) and switches away; `sem_signal` moves one waiter ba
 queue. Mutexes are binary semaphores that record their owner. Keyboard input uses the same
 mechanism, which is why the idle shell uses 0% CPU.
 
-## Design simplifications (worth stating in your report)
+## Design simplifications
 * Single CPU; interrupt disabling plus one file-system mutex are the only locks.
 * The shell is a kernel thread; programs it starts run in user mode.
 * `spawn` creates a process directly from a file (like `posix_spawn`); there is no `fork`.
@@ -248,11 +248,3 @@ mechanism, which is why the idle shell uses 0% CPU.
 * User programs have a fixed-size stack and no heap (`malloc`).
 * Killing a *kernel thread* that holds a mutex leaves it locked (user processes are safe).
 
-## Ideas for extending it
-1. **`fork()` with copy-on-write** using the page-fault handler.
-2. **A user heap:** an `sbrk` system call plus `malloc`/`free` in libc.
-3. **Pipes** (`ls | wc`) built from a buffer, two semaphores and the file descriptor table.
-4. **Persistence:** an ATA disk driver so MiniFS survives reboots.
-5. **Multilevel feedback queue** scheduler.
-6. **Priority inheritance** to fix priority inversion with mutexes.
-7. **The shell as a user program** (needs `fork`/`exec` or the existing `spawn`).
