@@ -40,6 +40,7 @@ int  fs_write(uint32_t ino, uint32_t off, const void *buf, uint32_t n);
 int  fs_truncate(uint32_t ino);
 int  fs_stat_ino(uint32_t ino, stat_t *st);
 int  fs_readdir(uint32_t dir_ino, uint32_t *offset, dirent_t *out);    /* 1 = entry, 0 = end */
+void fs_task_died(int pid);   /* release fs_lock if the dead task held it */
 void fs_open_ref(uint32_t ino, int delta);              /* open-file counting */
 void fs_usage(uint32_t *used_blocks, uint32_t *total_blocks,
               uint32_t *used_inodes, uint32_t *total_inodes);
