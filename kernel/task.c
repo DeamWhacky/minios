@@ -187,9 +187,26 @@ int task_create_user(const char *name, uint32_t page_dir, uint32_t entry,
     irq_restore(f);
     return pid;
 }
+void task_detach(int pid) {
+    uint32_t f = irq_save();
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != T_UNUSED && tasks[i].pid == pid) {
+            tasks[i].parent = 0;
+            break;
+        }
+    }
+    irq_restore(f);
+}
 
+static void detach_children(int parent_pid) {
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != T_UNUSED && tasks[i].parent == parent_pid)
+            tasks[i].parent = 0;
+    }
+}
 void task_exit(int code) {
     __asm__ volatile("cli");
+    detach_children(current->pid);
     current->exit_code = code;
     current->state = T_ZOMBIE;             /* stack is freed by schedule() later */
     wq_wake_all(&exit_waiters);
@@ -227,6 +244,7 @@ int task_kill(int pid) {
 
     if (t->state == T_READY)                       q_remove(&ready_q, t);
     else if (t->state == T_BLOCKED && t->waiting_on) q_remove(t->waiting_on, t);
+    detach_children(t->pid);
     t->exit_code = -9;
     t->state = T_ZOMBIE;
     wq_wake_all(&exit_waiters);
@@ -235,13 +253,32 @@ int task_kill(int pid) {
 }
 
 int task_wait(int pid) {
+    if (pid <= 0) return -1;
     uint32_t f = irq_save();
     for (;;) {
         task_t *t = NULL;
-        for (int i = 0; i < MAX_TASKS; i++) if (tasks[i].pid == pid) { t = &tasks[i]; break; }
-        if (!t || pid == 0) { irq_restore(f); return -1; }
-        if (t->state == T_ZOMBIE || t->state == T_UNUSED) {   /* exited (maybe already reaped) */
+        for (int i = 1; i < MAX_TASKS; i++) {
+            if (tasks[i].state != T_UNUSED && tasks[i].pid == pid) {
+                t = &tasks[i];
+                break;
+            }
+        }
+        if (!t || t->parent != current->pid) {
+            irq_restore(f);
+            return -1;
+        }
+        if (t->state == T_ZOMBIE) {
             int code = t->exit_code;
+            if (t->stack) {                /* in case parent ran before schedule() reaped it */
+                fd_close_all(t);
+                if (t->is_user) paging_free_dir(t->page_dir);
+                t->page_dir = 0;
+                kfree(t->stack);
+                t->stack = NULL;
+            }
+            t->pid = 0;
+            t->parent = 0;
+            t->state = T_UNUSED;           /* release slot for task_alloc() */
             irq_restore(f);
             return code;
         }
@@ -321,16 +358,22 @@ static task_t *peek_next(void) {
 }
 
 /* Free resources of finished tasks. Never the current one: we're on its stack. */
+/* Free resources of finished tasks. Never the current one: we're on its stack. */
 static void reap_zombies(void) {
     for (int i = 1; i < MAX_TASKS; i++) {
         task_t *t = &tasks[i];
         if (t->state == T_ZOMBIE && t != current) {
-            fd_close_all(t);
-            if (t->is_user) paging_free_dir(t->page_dir);   /* all its user memory */
-            t->page_dir = 0;
-            kfree(t->stack);
-            t->stack = NULL;
-            t->state = T_UNUSED;           /* pid & exit_code kept for task_wait() */
+            if (t->stack) {                /* free heavy resources once */
+                fd_close_all(t);
+                if (t->is_user) paging_free_dir(t->page_dir);
+                t->page_dir = 0;
+                kfree(t->stack);
+                t->stack = NULL;
+            }
+            if (t->parent == 0) {          /* detached or parent already exited */
+                t->pid = 0;
+                t->state = T_UNUSED;
+            }
         }
     }
 }

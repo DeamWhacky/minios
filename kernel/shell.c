@@ -353,7 +353,11 @@ static bool run_program(int argc, char **argv) {
     int pid = process_spawn(path, argc, argv, task_current()->priority > 5 ? 5 : task_current()->priority);
     if (pid < 0) { err(argv[0], pid); return true; }
 
-    if (background) { kprintf("[%d] %s running in background\n", pid, argv[0]); return true; }
+    if (background) {
+        task_detach(pid);
+        kprintf("[%d] %s running in background\n", pid, argv[0]);
+        return true;
+    }
 
     input_set_foreground(pid);                            /* Ctrl+C now kills it */
     int code = task_wait(pid);

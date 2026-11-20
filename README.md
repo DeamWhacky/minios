@@ -1,6 +1,6 @@
 # MiniOS — a small x86 operating system
 
-A 32-bit x86 operating system that boots in QEMU and shows
+A 32-bit x86 operating system (~4,200 lines of C and assembly) that boots in QEMU and shows
 the core ideas of an OS working for real: interrupts, preemptive multitasking with three
 scheduling policies, paging with a separate address space per process, user mode (ring 3)
 with protection, an inode file system with directories and file descriptors, system calls,

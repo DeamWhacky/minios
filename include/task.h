@@ -75,6 +75,7 @@ int       task_create_user(const char *name, uint32_t page_dir, uint32_t entry,
                            uint32_t user_esp, int priority);
 void      task_exit(int code) __attribute__((noreturn));
 int       task_kill(int pid);
+void      task_detach(int pid);
 void      task_yield(void);
 void      task_sleep(uint32_t ms);
 int       task_wait(int pid);            /* block until pid exits; returns exit code */
