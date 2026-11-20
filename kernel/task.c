@@ -192,6 +192,7 @@ void task_exit(int code) {
     __asm__ volatile("cli");
     current->exit_code = code;
     current->state = T_ZOMBIE;             /* stack is freed by schedule() later */
+    fs_task_died(current->pid);
     wq_wake_all(&exit_waiters);
     task_yield();
     panic("zombie task was scheduled");
@@ -203,6 +204,7 @@ uint32_t task_kill_current(regs_t *r, int code) {
     current->exit_code = code;
     current->state = T_ZOMBIE;
     wq_wake_all(&exit_waiters);
+    fs_task_died(current->pid);            /* don't leave fs_lock held forever */
     return schedule(r);
 }
 
@@ -229,6 +231,7 @@ int task_kill(int pid) {
     else if (t->state == T_BLOCKED && t->waiting_on) q_remove(t->waiting_on, t);
     t->exit_code = -9;
     t->state = T_ZOMBIE;
+    fs_task_died(pid);
     wq_wake_all(&exit_waiters);
     irq_restore(f);
     return 0;
