@@ -97,8 +97,9 @@ static void cmd_aging(int argc, char **argv) {
 static void cmd_spawn(int argc, char **argv) {
     int prio = argc >= 2 ? atoi(argv[1]) : PRIO_DEFAULT;
     int pid = spawn_spinner(prio);
-    if (pid < 0) kprintf("spawn failed (task table full?)\n");
-    else kprintf("Started CPU-bound kernel thread 'spinner' pid %d, priority %d\n", pid, prio);
+    if (pid < 0) { kprintf("spawn failed (task table full?)\n"); return; }
+    task_detach(pid);                      /* nobody waits for it: free its slot when it dies */
+    kprintf("Started CPU-bound kernel thread 'spinner' pid %d, priority %d\n", pid, prio);
 }
 
 static void cmd_kill(int argc, char **argv) {
@@ -353,7 +354,11 @@ static bool run_program(int argc, char **argv) {
     int pid = process_spawn(path, argc, argv, task_current()->priority > 5 ? 5 : task_current()->priority);
     if (pid < 0) { err(argv[0], pid); return true; }
 
-    if (background) { kprintf("[%d] %s running in background\n", pid, argv[0]); return true; }
+    if (background) {
+        task_detach(pid);
+        kprintf("[%d] %s running in background\n", pid, argv[0]);
+        return true;
+    }
 
     input_set_foreground(pid);                            /* Ctrl+C now kills it */
     int code = task_wait(pid);

@@ -187,12 +187,47 @@ int task_create_user(const char *name, uint32_t page_dir, uint32_t entry,
     irq_restore(f);
     return pid;
 }
+void task_detach(int pid) {
+    uint32_t f = irq_save();
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != T_UNUSED && tasks[i].pid == pid) {
+            tasks[i].parent = 0;
+            break;
+        }
+    }
+    irq_restore(f);
+}
+
+static void detach_children(int parent_pid) {
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != T_UNUSED && tasks[i].parent == parent_pid)
+            tasks[i].parent = 0;
+    }
+}
+
+/* Every way a task can die goes through here (call with interrupts off):
+ * normal exit, a fault or Ctrl+C in interrupt context, or `kill`.
+ * Its children are detached so the reaper frees them once they finish. */
+static void mark_dead(task_t *t, int code) {
+    detach_children(t->pid);
+    t->exit_code = code;
+    t->state = T_ZOMBIE;                   /* stack is freed by schedule() later */
+    wq_wake_all(&exit_waiters);
+}
+
+/* Release a finished task's stack, address space and open files (once). */
+static void free_task_resources(task_t *t) {
+    if (!t->stack) return;
+    fd_close_all(t);
+    if (t->is_user) paging_free_dir(t->page_dir);
+    t->page_dir = 0;
+    kfree(t->stack);
+    t->stack = NULL;
+}
 
 void task_exit(int code) {
     __asm__ volatile("cli");
-    current->exit_code = code;
-    current->state = T_ZOMBIE;             /* stack is freed by schedule() later */
-    wq_wake_all(&exit_waiters);
+    mark_dead(current, code);
     task_yield();
     panic("zombie task was scheduled");
 }
@@ -200,9 +235,7 @@ void task_exit(int code) {
 /* Kill the running task from interrupt context and switch away.
  * Used for CPU exceptions (code -11) and pending kills (code -9). */
 uint32_t task_kill_current(regs_t *r, int code) {
-    current->exit_code = code;
-    current->state = T_ZOMBIE;
-    wq_wake_all(&exit_waiters);
+    mark_dead(current, code);
     return schedule(r);
 }
 
@@ -227,21 +260,32 @@ int task_kill(int pid) {
 
     if (t->state == T_READY)                       q_remove(&ready_q, t);
     else if (t->state == T_BLOCKED && t->waiting_on) q_remove(t->waiting_on, t);
-    t->exit_code = -9;
-    t->state = T_ZOMBIE;
-    wq_wake_all(&exit_waiters);
+    mark_dead(t, -9);
     irq_restore(f);
     return 0;
 }
 
 int task_wait(int pid) {
+    if (pid <= 0) return -1;
     uint32_t f = irq_save();
     for (;;) {
         task_t *t = NULL;
-        for (int i = 0; i < MAX_TASKS; i++) if (tasks[i].pid == pid) { t = &tasks[i]; break; }
-        if (!t || pid == 0) { irq_restore(f); return -1; }
-        if (t->state == T_ZOMBIE || t->state == T_UNUSED) {   /* exited (maybe already reaped) */
+        for (int i = 1; i < MAX_TASKS; i++) {
+            if (tasks[i].state != T_UNUSED && tasks[i].pid == pid) {
+                t = &tasks[i];
+                break;
+            }
+        }
+        if (!t || t->parent != current->pid) {
+            irq_restore(f);
+            return -1;
+        }
+        if (t->state == T_ZOMBIE) {
             int code = t->exit_code;
+            free_task_resources(t);        /* in case parent ran before schedule() reaped it */
+            t->pid = 0;
+            t->parent = 0;
+            t->state = T_UNUSED;           /* release slot for task_alloc() */
             irq_restore(f);
             return code;
         }
@@ -325,12 +369,11 @@ static void reap_zombies(void) {
     for (int i = 1; i < MAX_TASKS; i++) {
         task_t *t = &tasks[i];
         if (t->state == T_ZOMBIE && t != current) {
-            fd_close_all(t);
-            if (t->is_user) paging_free_dir(t->page_dir);   /* all its user memory */
-            t->page_dir = 0;
-            kfree(t->stack);
-            t->stack = NULL;
-            t->state = T_UNUSED;           /* pid & exit_code kept for task_wait() */
+            free_task_resources(t);
+            if (t->parent == 0) {          /* detached or parent already exited */
+                t->pid = 0;
+                t->state = T_UNUSED;
+            }
         }
     }
 }

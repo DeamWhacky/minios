@@ -72,11 +72,13 @@ int fd_open(const char *path, int flags) {
     stat_t st;
     fs_stat_ino(ino, &st);
     if (st.type == FT_DIR && (flags & O_ACCMODE) != O_RDONLY) return -E_ISDIR;
-    if ((flags & O_TRUNC) && st.type == FT_FILE && (flags & O_ACCMODE) != O_RDONLY)
-        fs_truncate(ino);
 
     file_t *fp = file_alloc();
     if (!fp) return -E_MFILE;
+
+    if ((flags & O_TRUNC) && st.type == FT_FILE && (flags & O_ACCMODE) != O_RDONLY)
+        fs_truncate(ino);
+
     fp->kind = FILE_INODE;
     fp->ino = ino;
     fp->flags = flags;
