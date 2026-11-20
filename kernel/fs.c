@@ -254,6 +254,17 @@ void fs_init(void) {
     dir_add(root, "..", root);
 }
 
+/* Called when a task is killed. If it died inside a file system call it
+ * still owns fs_lock; release it so other tasks do not hang forever. */
+void fs_task_died(int pid) {
+    uint32_t f = irq_save();
+    if (fs_lock.owner_pid == pid) {
+        fs_lock.owner_pid = -1;
+        sem_signal(&fs_lock.sem);
+    }
+    irq_restore(f);
+}
+
 #define LOCKED(expr) ({ mutex_lock(&fs_lock); int _r = (expr); mutex_unlock(&fs_lock); _r; })
 
 int fs_lookup(const char *path)            { return LOCKED(resolve(path, false, NULL)); }
