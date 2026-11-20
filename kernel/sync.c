@@ -39,15 +39,33 @@ void mutex_init(mutex_t *m) {
     m->owner_pid = -1;
 }
 
+/* Ownership and the per-task lock count are updated with interrupts off, so
+ * there is no moment where the mutex is taken but has no owner recorded. */
 void mutex_lock(mutex_t *m) {
+    uint32_t f = irq_save();
     sem_wait(&m->sem);
-    m->owner_pid = task_current()->pid;
+    task_t *me = task_current();
+    m->owner_pid = me->pid;
+    me->locks_held++;
+    irq_restore(f);
 }
 
+/* A task is never killed while it holds a mutex: the data the mutex protects
+ * could be half-updated (see task_kill). The kill is remembered instead, and
+ * carried out here once the task's last mutex is released. User processes
+ * already die safely on their way back to user mode, so this is for kernel
+ * threads. */
 void mutex_unlock(mutex_t *m) {
-    if (m->owner_pid != task_current()->pid)
+    uint32_t f = irq_save();
+    task_t *me = task_current();
+    if (m->owner_pid != me->pid)
         kprintf("[mutex] warning: pid %d unlocking a mutex owned by %d\n",
-                task_current()->pid, m->owner_pid);
+                me->pid, m->owner_pid);
+    else if (me->locks_held > 0)
+        me->locks_held--;
     m->owner_pid = -1;
     sem_signal(&m->sem);
+    bool die = !me->is_user && me->kill_pending && me->locks_held == 0;
+    irq_restore(f);
+    if (die) task_exit(-9);                /* the deferred kill */
 }

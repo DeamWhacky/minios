@@ -246,5 +246,7 @@ mechanism, which is why the idle shell uses 0% CPU.
 * `spawn` creates a process directly from a file (like `posix_spawn`); there is no `fork`.
 * The file system lives in RAM; there is no disk driver, so changes are lost on reboot.
 * User programs have a fixed-size stack and no heap (`malloc`).
-* Killing a *kernel thread* that holds a mutex leaves it locked (user processes are safe).
+* A task that holds a mutex is not killed straight away: the kill waits until it releases
+  its last mutex, so locked data is never left half-updated. A kernel thread that *faults*
+  while holding a mutex still leaves it locked.
 

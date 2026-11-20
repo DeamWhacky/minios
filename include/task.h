@@ -60,6 +60,7 @@ typedef struct task {
     file_t       *fds[MAX_FDS];      /* open file descriptors                 */
     int           parent;
     volatile bool kill_pending;      /* kill requested while it was running   */
+    int           locks_held;        /* mutexes held; kills wait until it is 0 */
 
     struct task  *next;              /* link in ready queue / wait queue      */
 } task_t;

@@ -257,6 +257,14 @@ int task_kill(int pid) {
         irq_restore(f);
         return 0;
     }
+    /* The same goes for any task holding a mutex, kernel threads included:
+     * killing it now would leave the lock taken and the data it protects
+     * half-updated. mutex_unlock() finishes the kill once it is free. */
+    if (t->locks_held > 0) {
+        t->kill_pending = true;
+        irq_restore(f);
+        return 0;
+    }
 
     if (t->state == T_READY)                       q_remove(&ready_q, t);
     else if (t->state == T_BLOCKED && t->waiting_on) q_remove(t->waiting_on, t);
