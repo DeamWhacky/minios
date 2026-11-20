@@ -41,6 +41,11 @@ minios:/> cat /home/notes.txt
 minios:/> wc /home/notes.txt      # a USER program reading a file via syscalls
 minios:/> stat /home/notes.txt    # inode number, size, blocks
 minios:/> df                      # disk usage
+minios:/> ln /home/notes.txt /tmp/n   # hard link: a second name for the same inode
+minios:/> ls -l /tmp                # LINKS column shows 2
+minios:/> mkdir /home/a
+minios:/> mv /home/a /tmp         # directories can move between parents
+minios:/> bigfile 600              # a 600 KiB file through the double-indirect block
 
 minios:/> programs                # user programs installed in /bin
 minios:/> hello a b c             # runs in ring 3, prints its pid and privilege level
@@ -86,8 +91,9 @@ the CPU, because FCFS is non-preemptive.)
 | `cd [dir]`, `pwd` | working directory (the prompt shows it) |
 | `cat <file>...` | print files |
 | `echo text`, `echo text > f`, `echo text >> f` | print, overwrite, append |
-| `touch`, `mkdir`, `rm`, `cp`, `mv` | create, delete, copy, move/rename |
-| `stat <path>`, `df` | inode details, disk usage |
+| `touch`, `mkdir`, `rm`, `cp`, `mv` | create, delete, copy, move/rename (files and directories) |
+| `ln <file> <name>` | hard link: another name for the same file |
+| `stat <path>`, `df` | inode details (incl. link count), disk usage |
 
 | Processes & scheduling | |
 |---|---|
@@ -112,11 +118,12 @@ the CPU, because FCFS is non-preemptive.)
 | `hello [args]` | ring 3 privilege level, argc/argv passing, pid |
 | `isolation [n]` | separate address spaces: same virtual address, different data |
 | `evil <attack>` | protection: `cli`, `hlt`, `io`, `kread`, `kwrite`, `vga`, `null`, `syscall`, `loop` |
-| `fstest` | mkdir, open/create, write, lseek, read, stat, readdir, unlink, chdir, getcwd |
+| `fstest` | mkdir, open/create, write, lseek, read, stat, readdir, unlink, chdir, getcwd, link |
 | `wc [files]` | reading files (or stdin) through file descriptors |
 | `greet` | keyboard input via `read(0, ...)`, appending to a file |
 | `primes [n]` | CPU-bound work for scheduling experiments |
 | `spawner` | a process creating child processes (`spawn`) and waiting for them (`wait`) |
+| `bigfile [KiB]` | writes, verifies and deletes a big file (uses the double-indirect block) |
 
 To add your own: drop `user/bin/myprog.c` (with `#include "libc.h"` and a `main`) and run
 `make`. The Makefile compiles it, embeds it in the kernel, and it appears as `/bin/myprog`.
@@ -133,7 +140,7 @@ kernel/console.c      VGA text mode + COM1 serial, kprintf
 kernel/memory.c       frame allocator, page directories per process, kernel heap
 kernel/task.c         tasks, wait queues, scheduler (RR / priority+aging / FCFS)
 kernel/process.c      ELF loader, user address spaces, argv, user-pointer validation
-kernel/syscall.c      int 0x80 system call table (18 calls)
+kernel/syscall.c      int 0x80 system call table (19 calls)
 kernel/fs.c           MiniFS: blocks, inodes, directories, path resolution
 kernel/file.c         file descriptors and the open-file table
 kernel/sync.c         counting semaphores and mutexes
@@ -171,7 +178,10 @@ tick to the running task, ages waiting tasks and decides whether to preempt:
 | FCFS | head of the FIFO ready queue | never: only when the task blocks, sleeps, yields or exits |
 
 Task states: `READY → RUNNING → (SLEEPING | BLOCKED) → READY … → ZOMBIE`. A zombie's kernel
-stack, address space and open files are released at the next switch.
+stack, address space and open files are released at the next switch. Its task slot (pid and
+exit code) is kept until its parent collects it with `wait`; tasks nobody waits for (background
+programs, `spawn`ed threads, children of a parent that exited) are detached and freed at once.
+Only a task's own parent may wait for it.
 
 ### User mode and protection
 x86 has privilege rings; the kernel runs in ring 0 and user programs in ring 3.
@@ -190,6 +200,11 @@ x86 has privilege rings; the kernel runs in ring 0 and user programs in ring 3.
   can write anywhere, to `read()` into kernel memory.
 * **Faults:** a faulting process is terminated and its memory freed; the rest of the system
   carries on. Ctrl+C kills the foreground program safely (never mid-system-call).
+* **Faults while holding a lock:** a task that holds a kernel mutex is halfway through changing
+  shared kernel data. If it faults there, that is a kernel bug: killing it would leave the lock
+  taken and the data inconsistent, so the kernel panics with a clear message instead of
+  hanging later. For the same reason `kill` on such a task is *deferred*: it takes effect when
+  the task releases its last lock.
 
 ### Memory
 * **Physical memory manager:** a bitmap with one bit per 4 KiB frame.
@@ -205,22 +220,45 @@ x86 has privilege rings; the kernel runs in ring 0 and user programs in ring 3.
   mapped. The user half is private: two programs can use address `0x40001234` and see
   different memory (try `isolation`). Page 0 is unmapped so NULL dereferences fault.
 * **Heap (`kmalloc`/`kfree`):** first-fit free list that splits blocks and merges free
-  neighbours. Magic numbers catch invalid and double frees.
+  neighbours. Magic numbers catch invalid and double frees. Growing the heap is all or
+  nothing: if physical memory runs out halfway, the pages already added are unmapped and
+  freed again.
 
 ### File system (MiniFS)
-An inode file system on a 1 MiB RAM disk (2048 blocks of 512 bytes), structured like a
+An inode file system on a 4 MiB RAM disk (8192 blocks of 512 bytes), structured like a
 simplified ext2 or the xv6 file system:
 
-* **Blocks:** allocated from a free-block bitmap.
-* **Inodes:** 128 of them; each has a type, size, timestamps, 12 *direct* block pointers and
-  one *indirect* block holding 128 more pointers. Maximum file size is 70 KiB.
+* **Blocks:** allocated from a free-block bitmap. The allocator is *next fit*: it continues
+  from where the last allocation stopped instead of rescanning from block 1, and a running
+  count of free blocks makes `df` instant.
+* **Inodes:** 256 of them; each has a type, size, link count, timestamps, 12 *direct* block
+  pointers, one *indirect* block (128 more pointers) and one *double-indirect* block (128
+  indirect blocks of 128 pointers each). Maximum file size is about 8 MiB (more than the disk).
+
+  ```
+  file block   0 .. 11        -> direct[i]
+  file block  12 .. 139       -> indirect -> table[i - 12]
+  file block 140 .. 16523     -> dindirect -> table[j] -> table[k]
+  ```
+  Truncating a file frees its data blocks and any pointer blocks that become empty.
 * **Directories:** files whose data is an array of 32-byte entries `{name, inode}`. Every
-  directory contains `.` and `..`, which makes `cd ..` and `pwd` work.
+  directory contains `.` and `..`, which makes `cd ..` and `pwd` work. Deleted entries leave a
+  free slot that the next new name reuses; free slots at the end are cut off, so a directory
+  that shrinks gives its blocks back.
+* **Hard links:** a file can have several names (`ln`, the `link` system call). The inode
+  counts its names (`nlink`, shown by `stat` and `ls -l`); `rm` removes one name, and the inode
+  and its blocks are freed only when the last name goes. Directories cannot be linked, which
+  keeps the tree free of loops.
+* **Moving:** `mv` renames files and directories, also into another directory. A directory's
+  `..` entry is updated to its new parent, and moving a directory into itself or below itself
+  is refused.
 * **Path resolution:** walks the path component by component from `/` or the process's
   working directory.
 * **File descriptors:** each process has a table of 16 descriptors pointing into a global
   open-file table (inode + offset + flags), as in UNIX. Descriptors 0, 1, 2 are the console.
-  Files that are open cannot be deleted.
+  `open` looks up (or creates / truncates) the file and marks it open in one locked step, so
+  the file cannot be deleted in between. A file's last name cannot be removed while the file
+  is open.
 * **Concurrency:** one mutex serialises file system operations.
 
 Because it is a RAM disk, the file system is rebuilt at every boot.
@@ -229,7 +267,7 @@ Because it is a RAM disk, the file system is rebuilt at every boot.
 EAX = number, EBX/ECX/EDX = arguments, result in EAX (negative = error code):
 
 `exit, yield, sleep, getpid, ticks, read, write, open, close, lseek, unlink, mkdir, readdir,
-stat, chdir, getcwd, spawn, wait`
+stat, chdir, getcwd, spawn, wait, link`
 
 The system call gate is a *trap gate*, so long system calls can be preempted by the timer.
 
@@ -246,7 +284,8 @@ mechanism, which is why the idle shell uses 0% CPU.
 * `spawn` creates a process directly from a file (like `posix_spawn`); there is no `fork`.
 * The file system lives in RAM; there is no disk driver, so changes are lost on reboot.
 * User programs have a fixed-size stack and no heap (`malloc`).
+* No permissions or owners on files; timestamps are ticks since boot.
 * A task that holds a mutex is not killed straight away: the kill waits until it releases
-  its last mutex, so locked data is never left half-updated. A kernel thread that *faults*
-  while holding a mutex still leaves it locked.
+  its last mutex, so locked data is never left half-updated. A *fault* while holding a mutex
+  is treated as a kernel bug and stops the system with a panic.
 

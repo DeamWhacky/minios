@@ -211,13 +211,24 @@ typedef struct block {
 static block_t *heap_head, *heap_tail;
 static uint32_t heap_end;        /* first unmapped virtual address */
 
+/* All or nothing: if physical memory runs out halfway, unmap and free the
+ * pages added so far, so heap_end and the block list keep matching. */
 static bool heap_grow(uint32_t bytes) {
     uint32_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
     if (heap_end + pages * PAGE_SIZE > HEAP_MAX) return false;
+    uint32_t start = heap_end;
     for (uint32_t i = 0; i < pages; i++) {
         uint32_t frame = pmm_alloc_frame();
-        if (!frame) return false;
-        paging_map(heap_end, frame, PG_PRESENT | PG_WRITE);
+        if (!frame || !paging_map(heap_end, frame, PG_PRESENT | PG_WRITE)) {
+            if (frame) pmm_free_frame(frame);
+            while (heap_end > start) {                    /* roll back */
+                heap_end -= PAGE_SIZE;
+                uint32_t phys = paging_get_entry(kernel_dir, heap_end) & ~0xFFF;
+                paging_map(heap_end, 0, 0);                /* not present + TLB flush */
+                pmm_free_frame(phys);
+            }
+            return false;
+        }
         heap_end += PAGE_SIZE;
     }
     return true;

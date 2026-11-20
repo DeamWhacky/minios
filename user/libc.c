@@ -28,6 +28,7 @@ int  chdir(const char *p)                   { return sc(SYS_CHDIR, (uint32_t)p, 
 int  getcwd(char *b, uint32_t n)            { return sc(SYS_GETCWD, (uint32_t)b, n, 0); }
 int  spawn(const char *p, char **argv)      { return sc(SYS_SPAWN, (uint32_t)p, (uint32_t)argv, 0); }
 int  wait(int pid)                          { return sc(SYS_WAIT, pid, 0, 0); }
+int  link(const char *a, const char *b)     { return sc(SYS_LINK, (uint32_t)a, (uint32_t)b, 0); }
 
 /* ---------------- strings ---------------- */
 size_t strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }

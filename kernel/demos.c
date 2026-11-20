@@ -334,6 +334,10 @@ static void spinner(void *arg) {
     for (;;) busy(100000);
 }
 
+/* Nobody waits for a spinner, so detach it: otherwise its task slot would
+ * stay a zombie forever once it is killed. */
 int spawn_spinner(int prio) {
-    return task_create("spinner", spinner, NULL, prio);
+    int pid = task_create("spinner", spinner, NULL, prio);
+    if (pid > 0) task_detach(pid);
+    return pid;
 }

@@ -1,0 +1,94 @@
+MiniOS - Summary of changes (branch: fs-improvements-and-fixes)
+================================================================
+
+This branch is based on main and first merges two earlier fix branches:
+  - fix-kernel-bugs              (task wait / zombie slot fixes, bugs 2 and 3)
+  - fix/fs-lock-on-task-death    (file system lock released when a task dies)
+On top of those it adds the changes below.
+
+
+1. Fixes to the task wait / zombie handling (bugs 2 and 3)
+-----------------------------------------------------------
+- Threads started with "spawn" are now detached (kernel/demos.c).
+  The shell never waits for them, so after "kill" they stayed as zombies
+  forever and each spawn + kill permanently used up one of the 32 task slots.
+- A task that dies from a CPU fault or Ctrl+C now detaches its children
+  (task_kill_current in kernel/task.c). Before, its children kept a dead
+  parent's pid, nobody could ever wait for them, and their slots leaked.
+- Removed a duplicated comment in reap_zombies.
+
+
+2. Open / delete race (bug 1)
+-----------------------------
+- New fs_open() in kernel/fs.c does the lookup, create, truncate and
+  "mark as open" in one step while holding the file system lock, so a file
+  can no longer be deleted between being found and being opened.
+- fd_open (kernel/file.c) now uses fs_open() and cleans up on error.
+
+
+3. Task killed while holding a kernel lock (bug 4)
+--------------------------------------------------
+- Replaced fs_task_died(), which force-unlocked the file system lock and
+  could leave the file system half-modified.
+- Each task now counts the kernel locks it holds (locks_held in task.h,
+  updated in mutex_lock / mutex_unlock in kernel/sync.c).
+- "kill" on a task that holds a lock is deferred: the task is marked and
+  exits as soon as it releases its last lock.
+- A CPU fault while holding a kernel lock now stops the system with a clear
+  panic message instead of silently leaving the lock taken (kernel/cpu.c).
+- Exiting while holding a lock is reported as a kernel bug (panic).
+- The shell "kill" command now says whether the task was killed, will be
+  killed when it releases its lock, or does not exist.
+
+
+4. Heap growth failure (bug 5)
+------------------------------
+- heap_grow (kernel/memory.c) is now all-or-nothing: if it runs out of
+  physical frames halfway, it unmaps and frees every page it added in that
+  call and leaves the heap exactly as it was.
+
+
+5. File system improvements (MiniFS, same design, extended)
+-----------------------------------------------------------
+- Bigger disk: 4 MiB RAM disk (8192 blocks), 256 inodes.
+- Bigger files: added a double-indirect block, maximum file size is now
+  about 8 MiB (previously limited to direct + single indirect blocks).
+- Hard links: new "ln <file> <name>" shell command and link() system call
+  (SYS_LINK = 18). Files keep a link count (nlink) and are only freed when
+  the last name is removed. Links to directories are refused.
+- Directories can be moved into other directories with "mv"; the ".."
+  entry is updated, and moving a directory into itself is refused.
+- Directories shrink again when entries at the end are removed.
+- Faster block allocation (next-fit with a hint) and a free block counter,
+  so "df" no longer has to scan the whole bitmap. Double frees are caught.
+- Truncation frees the pointer blocks too and zeroes the unused tail.
+- "ls -l" shows a LINKS column, "stat" shows the link count, "df" shows
+  the new totals. stat_t has a new nlink field (added at the end).
+
+
+6. Other changes
+----------------
+- New user program bigfile (user/bin/bigfile.c): writes a large file,
+  reads every byte back to verify it and deletes it. Used to test the
+  double-indirect blocks and the disk-full case.
+- fstest now also tests hard links.
+- libc: added link().
+- The shell tokenizer now ignores words beyond the 16th and says so,
+  instead of overflowing.
+- Boot message updated for the 4 MiB disk.
+- README updated to describe all of the above.
+
+
+Testing done
+------------
+- Builds with no warnings.
+- ln / rm / cat on hard links, ln on a directory refused.
+- Moving a directory and checking ".." and pwd; moving into itself refused.
+- bigfile 600 KiB: all bytes correct. bigfile 5000 KiB: stops cleanly when
+  the disk is full.
+- fstest passes.
+- spawn + kill repeatedly: ps shows the slots are freed.
+- Deferred kill and the "fault while holding a lock" panic were checked in
+  a separate test build.
+- Not tested: the heap out-of-memory rollback path, and Ctrl+C on spawner
+  while its children are still running.

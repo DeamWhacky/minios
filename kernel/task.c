@@ -227,6 +227,8 @@ static void free_task_resources(task_t *t) {
 
 void task_exit(int code) {
     __asm__ volatile("cli");
+    if (current->locks_held)               /* it would leave shared data half-changed */
+        panic("task exited while holding a kernel lock");
     mark_dead(current, code);
     task_yield();
     panic("zombie task was scheduled");
@@ -244,26 +246,17 @@ int task_kill(int pid) {
     uint32_t f = irq_save();
     task_t *t = task_get(pid);
     if (!t || t->state == T_ZOMBIE) { irq_restore(f); return -1; }
-    if (t == current) {                    /* e.g. Ctrl+C from the keyboard IRQ */
-        t->kill_pending = true;            /* acted on when it returns to user mode */
-        irq_restore(f);
-        return 0;
-    }
-    /* A user process preempted in the middle of a system call might hold a
-     * kernel lock (e.g. the file system mutex). Killing it there would leave
-     * the lock taken forever, so let it finish the call first. */
-    if (t->is_user && t->state == T_READY && (((regs_t *)t->esp)->cs & 3) == 0) {
+    /* Defer the kill when dying now would be unsafe:
+     *  - it is the running task (e.g. Ctrl+C from the keyboard IRQ),
+     *  - it holds a kernel mutex: killing it would leave the lock taken and
+     *    the data it protects half-updated (acted on in mutex_unlock),
+     *  - it is a user process preempted inside a system call
+     *    (acted on when it returns to user mode). */
+    if (t == current || t->locks_held > 0 ||
+        (t->is_user && t->state == T_READY && (((regs_t *)t->esp)->cs & 3) == 0)) {
         t->kill_pending = true;
         irq_restore(f);
-        return 0;
-    }
-    /* The same goes for any task holding a mutex, kernel threads included:
-     * killing it now would leave the lock taken and the data it protects
-     * half-updated. mutex_unlock() finishes the kill once it is free. */
-    if (t->locks_held > 0) {
-        t->kill_pending = true;
-        irq_restore(f);
-        return 0;
+        return 1;
     }
 
     if (t->state == T_READY)                       q_remove(&ready_q, t);

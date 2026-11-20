@@ -72,7 +72,7 @@ void kmain(uint32_t magic, multiboot_info_t *mbi) {
     syscall_init();                             ok("System calls on int 0x80");
     timer_init();                               ok("PIT timer at 100 Hz -> preemptive scheduler");
     keyboard_init();                            ok("PS/2 keyboard + serial input");
-    fs_init();                                  ok("MiniFS: 1 MiB RAM disk formatted");
+    fs_init();                                  ok("MiniFS: 4 MiB RAM disk formatted");
     install_files();
 
     task_create("shell", shell_main, NULL, 7);

@@ -26,6 +26,7 @@ enum {
     SYS_GETCWD  = 15,  /* (char *buf, uint32_t size)               */
     SYS_SPAWN   = 16,  /* (const char *path, char **argv) -> pid   */
     SYS_WAIT    = 17,  /* (int pid) -> exit code                   */
+    SYS_LINK    = 18,  /* (const char *existing, const char *new)  */
     SYS_COUNT
 };
 
@@ -64,6 +65,7 @@ typedef struct {
     uint32_t size;                /* bytes */
     uint32_t blocks;              /* data blocks in use */
     uint32_t ctime, mtime;        /* ticks since boot */
+    uint32_t nlink;               /* number of names (hard links) */
 } stat_t;
 
 /* Error codes (returned negated) */

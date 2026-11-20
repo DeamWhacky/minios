@@ -163,7 +163,15 @@ static uint32_t exception_handler(regs_t *r) {
     console_set_color(C_LGREY, C_BLACK);
 
     /* A fault inside a normal task kills only that task: the OS survives.
-     * A fault in the idle task / early boot is unrecoverable. */
+     * But if the task was holding a kernel lock, it faulted halfway through
+     * changing shared kernel data (e.g. the file system). Killing it would
+     * leave the lock taken forever and the data inconsistent, so that is a
+     * kernel bug: stop with a clear message instead of hanging later.
+     * A fault in the idle task / early boot is unrecoverable too. */
+    if (t && t->pid > 0 && t->locks_held > 0) {
+        kprintf("            task %d '%s' holds %d kernel lock(s)\n", t->pid, t->name, t->locks_held);
+        panic("fault while holding a kernel lock");
+    }
     if (t && t->pid > 0) {
         kprintf("            -> killing task %d '%s'\n", t->pid, t->name);
         return task_kill_current(r, -11);

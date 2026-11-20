@@ -98,7 +98,6 @@ static void cmd_spawn(int argc, char **argv) {
     int prio = argc >= 2 ? atoi(argv[1]) : PRIO_DEFAULT;
     int pid = spawn_spinner(prio);
     if (pid < 0) { kprintf("spawn failed (task table full?)\n"); return; }
-    task_detach(pid);                      /* nobody waits for it: free its slot when it dies */
     kprintf("Started CPU-bound kernel thread 'spinner' pid %d, priority %d\n", pid, prio);
 }
 
@@ -106,8 +105,10 @@ static void cmd_kill(int argc, char **argv) {
     if (argc < 2) { kprintf("usage: kill <pid>\n"); return; }
     int pid = atoi(argv[1]);
     if (pid == task_current()->pid) { kprintf("refusing to kill the shell\n"); return; }
-    if (task_kill(pid) == 0) kprintf("Killed %d\n", pid);
-    else kprintf("No such task %d (or it can't be killed)\n", pid);
+    int r = task_kill(pid);
+    if (r == 0)      kprintf("Killed %d\n", pid);
+    else if (r == 1) kprintf("Kill of %d requested: it stops once it leaves the kernel / drops its locks\n", pid);
+    else             kprintf("No such task %d (or it can't be killed)\n", pid);
 }
 
 static void cmd_nice(int argc, char **argv) {
@@ -144,7 +145,7 @@ static void cmd_shutdown(int argc, char **argv) { (void)argc; (void)argv; system
 static void print_entry(const char *name, uint32_t ino, bool long_fmt) {
     stat_t st;
     if (fs_stat_ino(ino, &st) < 0) return;
-    if (long_fmt) kprintf("%c %4u %6u  ", st.type == FT_DIR ? 'd' : '-', st.ino, st.size);
+    if (long_fmt) kprintf("%c %4u %5u %8u  ", st.type == FT_DIR ? 'd' : '-', st.ino, st.nlink, st.size);
     if (st.type == FT_DIR) console_set_color(C_LBLUE, C_BLACK);
     kprintf("%s%s", name, st.type == FT_DIR ? "/" : "");
     console_set_color(C_LGREY, C_BLACK);
@@ -162,7 +163,7 @@ static void cmd_ls(int argc, char **argv) {
     stat_t st;
     fs_stat_ino(ino, &st);
     if (st.type != FT_DIR) { print_entry(path, ino, long_fmt); if (!long_fmt) kprintf("\n"); return; }
-    if (long_fmt) kprintf("T  INO   SIZE  NAME\n");
+    if (long_fmt) kprintf("T  INO LINKS     SIZE  NAME\n");
     uint32_t off = 0;
     dirent_t de;
     while (fs_readdir(ino, &off, &de) == 1) {
@@ -248,8 +249,8 @@ static void cmd_stat(int argc, char **argv) {
     stat_t st;
     int r = fs_stat(argv[1], &st);
     if (r < 0) { err(argv[1], r); return; }
-    kprintf("  File: %s\n  Type: %s   Inode: %u\n  Size: %u bytes in %u blocks of %u bytes\n",
-            argv[1], st.type == FT_DIR ? "directory" : "regular file", st.ino,
+    kprintf("  File: %s\n  Type: %s   Inode: %u   Links: %u\n  Size: %u bytes in %u blocks of %u bytes\n",
+            argv[1], st.type == FT_DIR ? "directory" : "regular file", st.ino, st.nlink,
             st.size, st.blocks, BLOCK_SIZE);
     kprintf("  Created: %u.%02u s after boot   Modified: %u.%02u s after boot\n",
             st.ctime / 100, st.ctime % 100, st.mtime / 100, st.mtime % 100);
@@ -260,7 +261,7 @@ static void cmd_df(int argc, char **argv) {
     uint32_t ub, tb, ui, ti;
     fs_usage(&ub, &tb, &ui, &ti);
     kprintf("MiniFS (RAM disk)\n  Blocks: %u / %u used (%u KiB / %u KiB), %u bytes each\n"
-            "  Inodes: %u / %u used\n  Max file size: %u KiB (12 direct + 128 indirect blocks)\n",
+            "  Inodes: %u / %u used\n  Max file size: %u KiB (12 direct + 128 indirect + 128x128 double-indirect blocks)\n",
             ub, tb, ub * BLOCK_SIZE / 1024, tb * BLOCK_SIZE / 1024, BLOCK_SIZE, ui, ti,
             MAX_FILE_SIZE / 1024);
 }
@@ -288,6 +289,12 @@ static void cmd_cp(int argc, char **argv) {
     r = fs_write_file(dst, buf, st.size);
     kfree(buf);
     if (r < 0) err(dst, r);
+}
+
+static void cmd_ln(int argc, char **argv) {
+    if (argc < 3) { kprintf("usage: ln <existing file> <new name>\n"); return; }
+    int r = fs_link(argv[1], argv[2]);
+    if (r < 0) err(argv[2], r);
 }
 
 static void cmd_mv(int argc, char **argv) {
@@ -382,7 +389,8 @@ static const command_t commands[] = {
     { "mkdir",    "<dir>...",            "create directories",                      cmd_mkdir },
     { "rm",       "<path>...",           "remove files / empty directories",        cmd_rm },
     { "cp",       "<src> <dst>",         "copy a file",                             cmd_cp },
-    { "mv",       "<src> <dst>",         "move / rename",                           cmd_mv },
+    { "mv",       "<src> <dst>",         "move / rename (directories too)",         cmd_mv },
+    { "ln",       "<file> <name>",       "hard link: another name for a file",      cmd_ln },
     { "stat",     "<path>",              "inode details",                           cmd_stat },
     { "df",       "",                    "file system usage",                       cmd_df },
     { "ps",       "",                    "list tasks and processes",                cmd_ps },
@@ -433,6 +441,10 @@ static int tokenize(char *line, char **argv) {
         if (!*line) break;
         argv[argc++] = line;
         while (*line && *line != ' ') line++;
+    }
+    if (*line) {                       /* more than MAX_ARGS words: drop the rest */
+        *line = 0;
+        kprintf("(only the first %d words are used)\n", MAX_ARGS);
     }
     return argc;
 }

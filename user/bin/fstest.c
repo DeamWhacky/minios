@@ -45,7 +45,16 @@ int main(void) {
     while (readdir(fd, &de) == 1) printf("    %-12s inode %u\n", de.name, de.ino);
     close(fd);
 
+    /* hard links: two names, one inode; the data survives until both are gone */
+    check("link(\"notes.txt\", \"alias.txt\")", link("notes.txt", "alias.txt"));
+    stat("alias.txt", &st);
+    printf("  stat alias.txt: inode %u, %u links\n", st.ino, st.nlink);
     check("unlink(\"notes.txt\")", unlink("notes.txt"));
+    fd = open("alias.txt", O_RDONLY);
+    n = read(fd, buf, 6); buf[n > 0 ? n : 0] = 0;
+    close(fd);
+    printf("  alias.txt still reads '%s'\n", buf);
+    check("unlink(\"alias.txt\")", unlink("alias.txt"));
     chdir("/");
     check("unlink(\"/tmp/fstest\")", unlink("/tmp/fstest"));
     printf("fstest done.\n");

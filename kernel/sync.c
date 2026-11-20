@@ -39,8 +39,10 @@ void mutex_init(mutex_t *m) {
     m->owner_pid = -1;
 }
 
-/* Ownership and the per-task lock count are updated with interrupts off, so
- * there is no moment where the mutex is taken but has no owner recorded. */
+/* Every task counts the mutexes it holds. A task holding one is in the
+ * middle of changing shared kernel data, so it must not die there:
+ * task_kill() defers the kill until the count drops to zero, and a CPU
+ * fault while holding a lock is a kernel bug that panics (see cpu.c). */
 void mutex_lock(mutex_t *m) {
     uint32_t f = irq_save();
     sem_wait(&m->sem);

@@ -79,6 +79,11 @@ static int dispatch(regs_t *r, uint32_t n, uint32_t a, uint32_t b, uint32_t c) {
         return fs_getcwd((char *)a, b);
     case SYS_SPAWN:  return sys_spawn_impl((const char *)a, (char *const *)b);
     case SYS_WAIT:   return task_wait((int)a);
+    case SYS_LINK: {
+        GET_PATH(from, a);
+        GET_PATH(to, b);
+        return fs_link(from, to);
+    }
     default:
         kprintf("[syscall] unknown call %u from pid %d\n", n, task_current()->pid);
         return -E_INVAL;

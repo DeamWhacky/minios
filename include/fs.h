@@ -8,17 +8,19 @@
  * MiniFS: an inode-based file system on a RAM disk.
  *
  *   disk:   NUM_BLOCKS blocks of BLOCK_SIZE bytes + a free-block bitmap
- *   inode:  type, size, 12 direct block pointers + 1 indirect block
- *           (an indirect block holds 128 more block numbers), like ext2
+ *   inode:  type, size, link count, 12 direct block pointers,
+ *           1 indirect block (128 more block numbers) and 1 double-
+ *           indirect block (128 x 128 more), like ext2
  *   dirs:   files whose data is an array of 32-byte dirent_t entries;
  *           every directory contains "." and ".."
  * --------------------------------------------------------------- */
 #define BLOCK_SIZE   512
-#define NUM_BLOCKS   2048                       /* 1 MiB disk */
-#define MAX_INODES   128
+#define NUM_BLOCKS   8192                       /* 4 MiB disk */
+#define MAX_INODES   256
 #define NDIRECT      12
 #define NINDIRECT    (BLOCK_SIZE / 4)
-#define MAX_FILE_SIZE ((NDIRECT + NINDIRECT) * BLOCK_SIZE)   /* 70 KiB */
+#define NDINDIRECT   (NINDIRECT * NINDIRECT)
+#define MAX_FILE_SIZE ((NDIRECT + NINDIRECT + NDINDIRECT) * BLOCK_SIZE)   /* ~8 MiB */
 #define ROOT_INO     1
 
 void fs_init(void);
@@ -29,6 +31,8 @@ int  fs_lookup(const char *path);                       /* -> inode number */
 int  fs_create(const char *path, int type);             /* -> new inode    */
 int  fs_unlink(const char *path);
 int  fs_rename(const char *from, const char *to);
+int  fs_link(const char *existing, const char *newpath);  /* hard link */
+int  fs_open(const char *path, int flags);              /* -> inode, counted as open */
 int  fs_stat(const char *path, stat_t *st);
 int  fs_chdir(const char *path);
 int  fs_getcwd(char *buf, uint32_t size);

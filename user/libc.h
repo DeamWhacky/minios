@@ -28,6 +28,7 @@ int      chdir(const char *path);
 int      getcwd(char *buf, uint32_t size);
 int      spawn(const char *path, char **argv);
 int      wait(int pid);
+int      link(const char *existing, const char *newpath);   /* hard link */
 
 /* strings & memory */
 size_t strlen(const char *s);

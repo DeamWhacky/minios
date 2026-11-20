@@ -65,25 +65,18 @@ int fd_open(const char *path, int flags) {
     for (fd = 0; fd < MAX_FDS && t->fds[fd]; fd++) ;
     if (fd == MAX_FDS) return -E_MFILE;
 
-    int ino = fs_lookup(path);
-    if (ino == -E_NOENT && (flags & O_CREAT)) ino = fs_create(path, FT_FILE);
-    if (ino < 0) return ino;
-
-    stat_t st;
-    fs_stat_ino(ino, &st);
-    if (st.type == FT_DIR && (flags & O_ACCMODE) != O_RDONLY) return -E_ISDIR;
-
-    file_t *fp = file_alloc();
+    file_t *fp = file_alloc();                    /* first, so a full table changes nothing */
     if (!fp) return -E_MFILE;
 
-    if ((flags & O_TRUNC) && st.type == FT_FILE && (flags & O_ACCMODE) != O_RDONLY)
-        fs_truncate(ino);
+    /* Lookup, create, truncate and "count as open" happen in one locked
+     * step: nobody can delete the file in between. */
+    int ino = fs_open(path, flags);
+    if (ino < 0) { file_put(fp); return ino; }
 
     fp->kind = FILE_INODE;
     fp->ino = ino;
     fp->flags = flags;
     fp->offset = 0;
-    fs_open_ref(ino, +1);
     t->fds[fd] = fp;
     return fd;
 }
